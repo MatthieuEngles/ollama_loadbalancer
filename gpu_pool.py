@@ -2,12 +2,82 @@
 
 import asyncio
 import logging
+import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+
+def _get_gpu_hardware_info() -> dict[int, dict]:
+    """Get GPU name and VRAM from nvidia-smi.
+
+    Returns:
+        Dict mapping GPU ID to {"name": str, "vram_mb": int}
+    """
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=index,name,memory.total",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=10
+        )
+        if result.returncode != 0:
+            logger.warning("nvidia-smi failed, GPU info unavailable")
+            return {}
+
+        gpu_info = {}
+        for line in result.stdout.strip().split("\n"):
+            if not line.strip():
+                continue
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) >= 3:
+                gpu_id = int(parts[0])
+                gpu_info[gpu_id] = {
+                    "name": parts[1],
+                    "vram_mb": int(parts[2]),
+                }
+        return gpu_info
+    except Exception as e:
+        logger.warning(f"Failed to get GPU hardware info: {e}")
+        return {}
+
+
+def _get_gpu_realtime_metrics() -> dict[int, dict]:
+    """Get real-time GPU utilization and memory usage.
+
+    Returns:
+        Dict mapping GPU ID to {"gpu_load_percent": int, "vram_used_mb": int, "vram_used_percent": float}
+    """
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=index,utilization.gpu,memory.used,memory.total",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode != 0:
+            return {}
+
+        metrics = {}
+        for line in result.stdout.strip().split("\n"):
+            if not line.strip():
+                continue
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) >= 4:
+                gpu_id = int(parts[0])
+                gpu_load = int(parts[1])
+                vram_used = int(parts[2])
+                vram_total = int(parts[3])
+                vram_percent = round((vram_used / vram_total) * 100, 1) if vram_total > 0 else 0
+                metrics[gpu_id] = {
+                    "gpu_load_percent": gpu_load,
+                    "vram_used_mb": vram_used,
+                    "vram_used_percent": vram_percent,
+                }
+        return metrics
+    except Exception:
+        return {}
 
 
 class GPUState(str, Enum):
@@ -20,20 +90,34 @@ class GPUState(str, Enum):
 class GPUInfo:
     """Information about a single GPU."""
     id: int
+    name: str = "Unknown"
+    vram_mb: int = 0
     state: GPUState = GPUState.FREE
     allocated_to_instance: Optional[str] = None  # Instance ID
     model_loaded: Optional[str] = None
     allocated_at: Optional[datetime] = None
 
-    def to_dict(self) -> dict:
-        """Convert to dictionary for API response."""
-        return {
+    def to_dict(self, realtime_metrics: Optional[dict] = None) -> dict:
+        """Convert to dictionary for API response.
+
+        Args:
+            realtime_metrics: Optional dict with gpu_load_percent, vram_used_mb, vram_used_percent
+        """
+        result = {
             "id": self.id,
+            "name": self.name,
+            "vram_mb": self.vram_mb,
+            "vram_gb": round(self.vram_mb / 1024, 1),
             "state": self.state.value,
             "allocated_to_instance": self.allocated_to_instance,
             "model_loaded": self.model_loaded,
             "allocated_at": self.allocated_at.isoformat() if self.allocated_at else None,
         }
+        if realtime_metrics:
+            result["gpu_load_percent"] = realtime_metrics.get("gpu_load_percent", 0)
+            result["vram_used_mb"] = realtime_metrics.get("vram_used_mb", 0)
+            result["vram_used_percent"] = realtime_metrics.get("vram_used_percent", 0.0)
+        return result
 
 
 @dataclass
@@ -55,9 +139,15 @@ class GPUPool:
         Args:
             gpu_ids: List of GPU IDs to manage.
         """
-        self._gpus: dict[int, GPUInfo] = {
-            gpu_id: GPUInfo(id=gpu_id) for gpu_id in gpu_ids
-        }
+        hw_info = _get_gpu_hardware_info()
+        self._gpus: dict[int, GPUInfo] = {}
+        for gpu_id in gpu_ids:
+            info = hw_info.get(gpu_id, {})
+            self._gpus[gpu_id] = GPUInfo(
+                id=gpu_id,
+                name=info.get("name", "Unknown"),
+                vram_mb=info.get("vram_mb", 0),
+            )
         self._lock = asyncio.Lock()
         self._instances: dict[str, set[int]] = {}  # instance_id -> set of GPU IDs
         self._model_instances: dict[str, str] = {}  # model_name -> instance_id
@@ -230,13 +320,22 @@ class GPUPool:
             logger.info(f"Released all GPUs, cleared {count} instances")
             return count
 
-    def get_status(self) -> dict:
-        """Get current pool status for API response."""
+    def get_status(self, include_realtime: bool = True) -> dict:
+        """Get current pool status for API response.
+
+        Args:
+            include_realtime: If True, fetch real-time GPU metrics (load, vram usage)
+        """
+        realtime_metrics = _get_gpu_realtime_metrics() if include_realtime else {}
+
         return {
             "total_gpus": self.total_gpus,
             "free_gpus": self.free_count,
             "allocated_gpus": self.allocated_count,
-            "gpus": [gpu.to_dict() for gpu in self._gpus.values()],
+            "gpus": [
+                gpu.to_dict(realtime_metrics.get(gpu.id))
+                for gpu in self._gpus.values()
+            ],
             "instances": {
                 inst_id: list(gpus) for inst_id, gpus in self._instances.items()
             },
