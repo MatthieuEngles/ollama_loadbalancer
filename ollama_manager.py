@@ -123,12 +123,39 @@ class OllamaManager:
         self._next_port += 1
         return port
 
+    def _get_least_loaded_instance(self, model_name: str) -> Optional[OllamaInstance]:
+        """Get the least loaded ready instance for a model.
+
+        Args:
+            model_name: Model to find instance for.
+
+        Returns:
+            Least loaded instance, or None if no ready instance exists.
+        """
+        instance_ids = self._gpu_pool.get_instances_for_model(model_name)
+        best_instance = None
+        min_load = float('inf')
+
+        for inst_id in instance_ids:
+            instance = self._instances.get(inst_id)
+            if instance and instance.state == InstanceState.READY:
+                if instance.active_requests < min_load:
+                    min_load = instance.active_requests
+                    best_instance = instance
+
+        return best_instance
+
     async def get_or_create_instance(
         self,
         model_name: str,
         gpu_count: int,
     ) -> Optional[OllamaInstance]:
         """Get an existing instance for the model or create a new one.
+
+        Load balancing strategy:
+        1. If free GPUs available -> create new instance (horizontal scaling)
+        2. If no free GPUs -> use least loaded existing instance
+        3. If no instance exists -> queue/reject based on config
 
         Args:
             model_name: Name of the model to load.
@@ -138,29 +165,11 @@ class OllamaManager:
             OllamaInstance if successful, None otherwise.
         """
         async with self._lock:
-            # Check if model is already loaded or being loaded
-            existing_instance_id = self._gpu_pool.get_instance_for_model(model_name)
-            if existing_instance_id and existing_instance_id in self._instances:
-                instance = self._instances[existing_instance_id]
-                if instance.state == InstanceState.READY:
-                    logger.info(f"Reusing existing instance {instance.id} for {model_name}")
-                    self._reset_ttl(instance.id)
-                    return instance
-                elif instance.state == InstanceState.STARTING:
-                    # Instance is starting, wait for it outside the lock
-                    logger.info(f"Waiting for starting instance {instance.id} for {model_name}")
-                    starting_instance = instance
-                    # Release lock and wait
-                else:
-                    starting_instance = None
-            else:
-                starting_instance = None
+            # Check if we can create a new instance (horizontal scaling)
+            can_allocate = await self._gpu_pool.can_allocate(gpu_count)
 
-            if starting_instance:
-                # Wait outside lock for instance to be ready
-                pass
-            else:
-                # Try to allocate GPUs
+            if can_allocate:
+                # Create new instance for parallel processing
                 instance_id = str(uuid.uuid4())[:8]
                 allocation = await self._gpu_pool.try_allocate(
                     gpu_count=gpu_count,
@@ -168,22 +177,7 @@ class OllamaManager:
                     model_name=model_name,
                 )
 
-                if not allocation.success:
-                    logger.warning(f"Failed to allocate GPUs: {allocation.error}")
-                    return None
-
-                # If reused existing allocation, check instance state
-                if allocation.reused_existing and allocation.instance_id:
-                    existing = self._instances.get(allocation.instance_id)
-                    if existing:
-                        if existing.state == InstanceState.READY:
-                            self._reset_ttl(existing.id)
-                            return existing
-                        elif existing.state == InstanceState.STARTING:
-                            starting_instance = existing
-
-                if not starting_instance:
-                    # Create new instance
+                if allocation.success:
                     port = self._get_next_port()
                     instance = OllamaInstance(
                         id=instance_id,
@@ -191,35 +185,65 @@ class OllamaManager:
                         gpu_ids=allocation.gpu_ids,
                         model_name=model_name,
                     )
-
                     self._instances[instance_id] = instance
                     self._port_to_instance[port] = instance_id
+                    logger.info(f"Creating new instance {instance_id} on GPU(s) {allocation.gpu_ids} for {model_name}")
+                    new_instance = instance
+                else:
+                    new_instance = None
+            else:
+                new_instance = None
 
-        # If we're waiting for a starting instance
+            # If we couldn't allocate, try to reuse least loaded instance
+            if new_instance is None:
+                existing = self._get_least_loaded_instance(model_name)
+                if existing:
+                    logger.info(f"Reusing instance {existing.id} for {model_name} (active_requests={existing.active_requests})")
+                    self._reset_ttl(existing.id)
+                    return existing
+
+                # Check for starting instances we can wait on
+                instance_ids = self._gpu_pool.get_instances_for_model(model_name)
+                for inst_id in instance_ids:
+                    inst = self._instances.get(inst_id)
+                    if inst and inst.state == InstanceState.STARTING:
+                        logger.info(f"Waiting for starting instance {inst.id} for {model_name}")
+                        starting_instance = inst
+                        break
+                else:
+                    starting_instance = None
+
+                if starting_instance:
+                    # Release lock and wait for starting instance
+                    pass
+                else:
+                    # No GPUs and no existing instance
+                    logger.warning(f"No GPUs available and no existing instance for {model_name}")
+                    return None
+            else:
+                starting_instance = None
+
+        # Wait for starting instance if needed
         if starting_instance:
             ready = await self._wait_for_ready(starting_instance)
             if ready and starting_instance.state == InstanceState.READY:
                 self._reset_ttl(starting_instance.id)
                 return starting_instance
-            elif starting_instance.state == InstanceState.READY:
-                self._reset_ttl(starting_instance.id)
-                return starting_instance
-            else:
-                return None
+            return None
 
-        # Spawn Ollama process (outside lock)
-        success = await self._spawn_ollama(instance)
+        # Spawn Ollama process for new instance (outside lock)
+        success = await self._spawn_ollama(new_instance)
         if not success:
-            await self._cleanup_failed_instance(instance)
+            await self._cleanup_failed_instance(new_instance)
             return None
 
-        # Wait for instance to be ready (state is set inside _wait_for_ready)
-        ready = await self._wait_for_ready(instance)
+        # Wait for instance to be ready
+        ready = await self._wait_for_ready(new_instance)
         if not ready:
-            await self._cleanup_failed_instance(instance)
+            await self._cleanup_failed_instance(new_instance)
             return None
 
-        return instance
+        return new_instance
 
     async def _spawn_ollama(self, instance: OllamaInstance) -> bool:
         """Spawn an Ollama process.
@@ -430,11 +454,8 @@ class OllamaManager:
         return self._instances.get(instance_id)
 
     def get_instance_for_model(self, model_name: str) -> Optional[OllamaInstance]:
-        """Get instance that has model loaded."""
-        instance_id = self._gpu_pool.get_instance_for_model(model_name)
-        if instance_id:
-            return self._instances.get(instance_id)
-        return None
+        """Get least loaded ready instance that has model loaded."""
+        return self._get_least_loaded_instance(model_name)
 
     def get_all_instances(self) -> list[OllamaInstance]:
         """Get all instances."""

@@ -150,7 +150,7 @@ class GPUPool:
             )
         self._lock = asyncio.Lock()
         self._instances: dict[str, set[int]] = {}  # instance_id -> set of GPU IDs
-        self._model_instances: dict[str, str] = {}  # model_name -> instance_id
+        self._model_instances: dict[str, list[str]] = {}  # model_name -> list of instance_ids
 
     @property
     def total_gpus(self) -> int:
@@ -181,15 +181,27 @@ class GPUPool:
         return list(self._gpus.values())
 
     def get_instance_for_model(self, model_name: str) -> Optional[str]:
-        """Get instance ID if model is already loaded.
+        """Get first instance ID if model is already loaded (deprecated, use get_instances_for_model).
 
         Args:
             model_name: Name of the model to check.
 
         Returns:
-            Instance ID if model is loaded, None otherwise.
+            First instance ID if model is loaded, None otherwise.
         """
-        return self._model_instances.get(model_name)
+        instances = self._model_instances.get(model_name, [])
+        return instances[0] if instances else None
+
+    def get_instances_for_model(self, model_name: str) -> list[str]:
+        """Get all instance IDs that have this model loaded.
+
+        Args:
+            model_name: Name of the model to check.
+
+        Returns:
+            List of instance IDs with this model loaded.
+        """
+        return self._model_instances.get(model_name, [])
 
     def get_instance_gpus(self, instance_id: str) -> set[int]:
         """Get GPU IDs allocated to an instance."""
@@ -204,6 +216,7 @@ class GPUPool:
         """Try to allocate GPUs for a new instance.
 
         This is atomic - either all GPUs are allocated or none.
+        Note: This no longer auto-reuses existing instances. The manager decides reuse.
 
         Args:
             gpu_count: Number of GPUs needed.
@@ -214,19 +227,6 @@ class GPUPool:
             AllocationResult with success status and allocated GPU IDs.
         """
         async with self._lock:
-            # Check if model is already loaded
-            existing_instance = self._model_instances.get(model_name)
-            if existing_instance and existing_instance in self._instances:
-                logger.info(
-                    f"Model {model_name} already loaded on instance {existing_instance}"
-                )
-                return AllocationResult(
-                    success=True,
-                    gpu_ids=list(self._instances[existing_instance]),
-                    instance_id=existing_instance,
-                    reused_existing=True,
-                )
-
             # Check if enough GPUs are free
             free_gpus = self.free_gpus
             if len(free_gpus) < gpu_count:
@@ -249,7 +249,11 @@ class GPUPool:
                 self._gpus[gpu_id].allocated_at = now
 
             self._instances[instance_id] = set(allocated_gpus)
-            self._model_instances[model_name] = instance_id
+
+            # Track model -> instances (multiple instances per model)
+            if model_name not in self._model_instances:
+                self._model_instances[model_name] = []
+            self._model_instances[model_name].append(instance_id)
 
             logger.info(
                 f"Allocated GPUs {allocated_gpus} for instance {instance_id} "
@@ -279,14 +283,13 @@ class GPUPool:
 
             gpu_ids = self._instances.pop(instance_id)
 
-            # Find and remove model mapping
-            model_to_remove = None
-            for model, inst_id in self._model_instances.items():
-                if inst_id == instance_id:
-                    model_to_remove = model
+            # Remove instance from model mapping (model_instances is now a list)
+            for model, inst_ids in list(self._model_instances.items()):
+                if instance_id in inst_ids:
+                    inst_ids.remove(instance_id)
+                    if not inst_ids:
+                        del self._model_instances[model]
                     break
-            if model_to_remove:
-                del self._model_instances[model_to_remove]
 
             # Free the GPUs
             for gpu_id in gpu_ids:
