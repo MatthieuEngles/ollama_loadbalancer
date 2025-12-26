@@ -1,0 +1,113 @@
+# Ollama Load Balancer Configuration
+# ==================================
+
+server:
+  host: "0.0.0.0"
+  port: 11434
+  log_level: "DEBUG"      # DEBUG, INFO, WARNING, ERROR
+  log_format: "json"     # json or text
+
+# GPU Pool Configuration
+# List all GPUs available for Ollama instances
+gpu_pool:
+  - id: 0
+  - id: 1
+  - id: 2
+
+# Model Configuration
+# Define GPU requirements for specific models
+# Models not listed will use the "default" configuration
+models:
+  # Large models - require 3 GPUs
+  "llama3:70b":
+    gpu_count: 3
+    priority: high
+  "llama3.1:70b":
+    gpu_count: 3
+    priority: high
+  "qwen2:72b":
+    gpu_count: 3
+    priority: normal
+  "mixtral:8x22b":
+    gpu_count: 3
+    priority: normal
+  "command-r-plus:104b":
+    gpu_count: 3
+    priority: high
+
+  # Medium models - require 2 GPUs
+  "llama3:30b":
+    gpu_count: 2
+    priority: normal
+  "codestral:22b":
+    gpu_count: 2
+    priority: normal
+  "mixtral:8x7b":
+    gpu_count: 2
+    priority: normal
+  "qwen2:14b":
+    gpu_count: 2
+    priority: normal
+  "deepseek-coder:33b":
+    gpu_count: 2
+    priority: normal
+
+  # Small models - 1 GPU is sufficient
+  "llama3:8b":
+    gpu_count: 1
+    priority: normal
+  "llama3.1:8b":
+    gpu_count: 1
+    priority: normal
+  "mistral:7b":
+    gpu_count: 1
+    priority: normal
+  "phi3:mini":
+    gpu_count: 1
+    priority: low
+  "phi3:medium":
+    gpu_count: 1
+    priority: low
+  "gemma:7b":
+    gpu_count: 1
+    priority: normal
+  "qwen2:7b":
+    gpu_count: 1
+    priority: normal
+  "codellama:7b":
+    gpu_count: 1
+    priority: normal
+  "nomic-embed-text":
+    gpu_count: 1
+    priority: low
+  "mxbai-embed-large":
+    gpu_count: 1
+    priority: low
+
+  # Default configuration for unlisted models
+  default:
+    gpu_count: 1
+    priority: normal
+
+# Behavior Configuration
+behavior:
+  # Action when resources are insufficient: "queue" or "reject"
+  # - queue: Wait in queue until resources become available
+  # - reject: Return HTTP 429 immediately
+  when_busy: "queue"
+
+  # Maximum time (seconds) a request can wait in queue
+  queue_timeout: 300
+
+  # Keep Ollama instance alive for X seconds after last request
+  # Set higher for frequently used models to avoid reload overhead
+  instance_ttl: 120
+
+  # Maximum number of requests that can wait in queue
+  max_queue_size: 20
+
+  # Interval (seconds) between health checks on running instances
+  health_check_interval: 10
+
+  # Maximum time (seconds) to wait for Ollama instance to start
+  startup_timeout: 180

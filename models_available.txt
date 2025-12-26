@@ -1,0 +1,87 @@
+# Modèles Ollama Disponibles
+# Source: https://ollama.com/library
+# Date: 2025-12-25
+#
+# Légende capacités:
+#   [tools]  - Function calling / Tool use
+#   [vision] - Analyse d'images
+#   [think]  - Réflexion avancée (reasoning)
+#   [code]   - Optimisé pour le code
+#   [embed]  - Modèle d'embedding
+
+## Modèles Généraux
+llama3.1:8b          [tools]
+llama3.1:70b         [tools]
+llama3.1:405b        [tools]
+llama3.2:1b          [tools]
+llama3.2:3b          [tools]
+llama3.3:70b         [tools]
+gemma3:1b
+gemma3:4b
+gemma3:12b           [tools]
+gemma3:27b           [tools]
+qwen2.5:0.5b
+qwen2.5:1.5b
+qwen2.5:3b           [tools]
+qwen2.5:7b           [tools]
+qwen2.5:14b          [tools]
+qwen2.5:32b          [tools]
+qwen2.5:72b          [tools]
+qwen3:0.6b           [think]
+qwen3:1.7b           [think]
+qwen3:4b             [think] [tools]
+qwen3:8b             [think] [tools]
+qwen3:14b            [think] [tools]
+qwen3:30b            [think] [tools]
+qwen3:32b            [think] [tools]
+qwen3:235b           [think] [tools]
+mistral:7b           [tools]
+phi4:14b             [tools]
+
+## Modèles de Codage
+qwen2.5-coder:0.5b   [code]
+qwen2.5-coder:1.5b   [code]
+qwen2.5-coder:3b     [code]
+qwen2.5-coder:7b     [code] [tools]
+qwen2.5-coder:14b    [code] [tools]
+qwen2.5-coder:32b    [code] [tools]
+devstral:24b         [code] [tools]
+deepseek-coder-v2:16b    [code]
+deepseek-coder-v2:236b   [code]
+starcoder2:3b        [code]
+starcoder2:7b        [code]
+starcoder2:15b       [code]
+codellama:7b         [code]
+codellama:13b        [code]
+codellama:34b        [code]
+codellama:70b        [code]
+
+## Modèles de Vision
+llama3.2-vision:11b  [vision]
+llama3.2-vision:90b  [vision]
+llava:7b             [vision]
+llava:13b            [vision]
+llava:34b            [vision]
+qwen2-vl:7b          [vision]
+qwen2-vl:72b         [vision]
+
+## Modèles Reasoning (Think)
+deepseek-r1:1.5b     [think]
+deepseek-r1:7b       [think]
+deepseek-r1:8b       [think]
+deepseek-r1:14b      [think]
+deepseek-r1:32b      [think]
+deepseek-r1:70b      [think]
+deepseek-r1:671b     [think]
+qwq:32b              [think]
+
+## Modèles d'Embedding
+nomic-embed-text     [embed]
+bge-m3               [embed]
+mxbai-embed-large    [embed]
+snowflake-arctic-embed  [embed]
+
+## Estimations VRAM (Q4 quantization, contexte 4096)
+# 1 GPU A4000 (16 Go): jusqu'à ~13B
+# 2 GPU A4000 (32 Go): jusqu'à ~30B
+# 3 GPU A4000 (48 Go): jusqu'à ~70B

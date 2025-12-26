@@ -1,0 +1,94 @@
+{
+  "metadata": {
+    "source": "https://ollama.com/library",
+    "date": "2025-12-25",
+    "capabilities": {
+      "tools": "Function calling / Tool use",
+      "vision": "Analyse d'images",
+      "think": "Réflexion avancée (reasoning)",
+      "code": "Optimisé pour le code",
+      "embed": "Modèle d'embedding"
+    },
+    "gpu_estimates": {
+      "1_gpu_16gb": "jusqu'à ~13B",
+      "2_gpu_32gb": "jusqu'à ~30B",
+      "3_gpu_48gb": "jusqu'à ~70B"
+    }
+  },
+  "models": {
+    "general": [
+      {"name": "llama3.1:8b", "params": "8B", "context": 131072, "capabilities": ["tools"]},
+      {"name": "llama3.1:70b", "params": "70B", "context": 131072, "capabilities": ["tools"]},
+      {"name": "llama3.1:405b", "params": "405B", "context": 131072, "capabilities": ["tools"]},
+      {"name": "llama3.2:1b", "params": "1B", "context": 131072, "capabilities": ["tools"]},
+      {"name": "llama3.2:3b", "params": "3B", "context": 131072, "capabilities": ["tools"]},
+      {"name": "llama3.3:70b", "params": "70B", "context": 131072, "capabilities": ["tools"]},
+      {"name": "gemma3:1b", "params": "1B", "context": 32768, "capabilities": []},
+      {"name": "gemma3:4b", "params": "4B", "context": 128000, "capabilities": ["vision"]},
+      {"name": "gemma3:12b", "params": "12B", "context": 128000, "capabilities": ["tools", "vision"]},
+      {"name": "gemma3:27b", "params": "27B", "context": 128000, "capabilities": ["tools", "vision"]},
+      {"name": "qwen2.5:0.5b", "params": "0.5B", "context": 32768, "capabilities": []},
+      {"name": "qwen2.5:1.5b", "params": "1.5B", "context": 32768, "capabilities": []},
+      {"name": "qwen2.5:3b", "params": "3B", "context": 32768, "capabilities": ["tools"]},
+      {"name": "qwen2.5:7b", "params": "7B", "context": 131072, "capabilities": ["tools"]},
+      {"name": "qwen2.5:14b", "params": "14B", "context": 131072, "capabilities": ["tools"]},
+      {"name": "qwen2.5:32b", "params": "32B", "context": 131072, "capabilities": ["tools"]},
+      {"name": "qwen2.5:72b", "params": "72B", "context": 131072, "capabilities": ["tools"]},
+      {"name": "qwen2.5-1m:7b", "params": "7B", "context": 1010000, "capabilities": ["tools"], "note": "Requires 120GB+ VRAM for full context"},
+      {"name": "qwen2.5-1m:14b", "params": "14B", "context": 1010000, "capabilities": ["tools"], "note": "Requires 320GB+ VRAM for full context"},
+      {"name": "qwen3:0.6b", "params": "0.6B", "context": 32768, "capabilities": ["think"]},
+      {"name": "qwen3:1.7b", "params": "1.7B", "context": 32768, "capabilities": ["think"]},
+      {"name": "qwen3:4b", "params": "4B", "context": 32768, "capabilities": ["think", "tools"]},
+      {"name": "qwen3:8b", "params": "8B", "context": 131072, "capabilities": ["think", "tools"]},
+      {"name": "qwen3:14b", "params": "14B", "context": 131072, "capabilities": ["think", "tools"]},
+      {"name": "qwen3:30b", "params": "30B", "context": 131072, "capabilities": ["think", "tools"]},
+      {"name": "qwen3:32b", "params": "32B", "context": 131072, "capabilities": ["think", "tools"]},
+      {"name": "qwen3:235b", "params": "235B", "context": 131072, "capabilities": ["think", "tools"]},
+      {"name": "mistral:7b", "params": "7B", "context": 32768, "capabilities": ["tools"]},
+      {"name": "phi4:14b", "params": "14B", "context": 16384, "capabilities": ["tools"]}
+    ],
+    "code": [
+      {"name": "qwen2.5-coder:0.5b", "params": "0.5B", "context": 32768, "capabilities": ["code"]},
+      {"name": "qwen2.5-coder:1.5b", "params": "1.5B", "context": 32768, "capabilities": ["code"]},
+      {"name": "qwen2.5-coder:3b", "params": "3B", "context": 32768, "capabilities": ["code"]},
+      {"name": "qwen2.5-coder:7b", "params": "7B", "context": 131072, "capabilities": ["code", "tools"]},
+      {"name": "qwen2.5-coder:14b", "params": "14B", "context": 131072, "capabilities": ["code", "tools"]},
+      {"name": "qwen2.5-coder:32b", "params": "32B", "context": 131072, "capabilities": ["code", "tools"]},
+      {"name": "devstral:24b", "params": "24B", "context": 131072, "capabilities": ["code", "tools"]},
+      {"name": "deepseek-coder-v2:16b", "params": "16B", "context": 131072, "capabilities": ["code"]},
+      {"name": "deepseek-coder-v2:236b", "params": "236B", "context": 131072, "capabilities": ["code"]},
+      {"name": "starcoder2:3b", "params": "3B", "context": 16384, "capabilities": ["code"]},
+      {"name": "starcoder2:7b", "params": "7B", "context": 16384, "capabilities": ["code"]},
+      {"name": "starcoder2:15b", "params": "15B", "context": 16384, "capabilities": ["code"]},
+      {"name": "codellama:7b", "params": "7B", "context": 16384, "capabilities": ["code"]},
+      {"name": "codellama:13b", "params": "13B", "context": 16384, "capabilities": ["code"]},
+      {"name": "codellama:34b", "params": "34B", "context": 16384, "capabilities": ["code"]},
+      {"name": "codellama:70b", "params": "70B", "context": 16384, "capabilities": ["code"]}
+    ],
+    "vision": [
+      {"name": "llama3.2-vision:11b", "params": "11B", "context": 131072, "capabilities": ["vision"]},
+      {"name": "llama3.2-vision:90b", "params": "90B", "context": 131072, "capabilities": ["vision"]},
+      {"name": "llava:7b", "params": "7B", "context": 4096, "capabilities": ["vision"]},
+      {"name": "llava:13b", "params": "13B", "context": 4096, "capabilities": ["vision"]},
+      {"name": "llava:34b", "params": "34B", "context": 4096, "capabilities": ["vision"]},
+      {"name": "qwen2-vl:7b", "params": "7B", "context": 32768, "capabilities": ["vision"]},
+      {"name": "qwen2-vl:72b", "params": "72B", "context": 32768, "capabilities": ["vision"]}
+    ],
+    "reasoning": [
+      {"name": "deepseek-r1:1.5b", "params": "1.5B", "context": 65536, "capabilities": ["think"]},
+      {"name": "deepseek-r1:7b", "params": "7B", "context": 65536, "capabilities": ["think"]},
+      {"name": "deepseek-r1:8b", "params": "8B", "context": 65536, "capabilities": ["think"]},
+      {"name": "deepseek-r1:14b", "params": "14B", "context": 65536, "capabilities": ["think"]},
+      {"name": "deepseek-r1:32b", "params": "32B", "context": 65536, "capabilities": ["think"]},
+      {"name": "deepseek-r1:70b", "params": "70B", "context": 65536, "capabilities": ["think"]},
+      {"name": "deepseek-r1:671b", "params": "671B", "context": 65536, "capabilities": ["think"]},
+      {"name": "qwq:32b", "params": "32B", "context": 131072, "capabilities": ["think"]}
+    ],
+    "embedding": [
+      {"name": "nomic-embed-text", "params": "137M", "context": 8192, "capabilities": ["embed"]},
+      {"name": "bge-m3", "params": "567M", "context": 8192, "capabilities": ["embed"]},
+      {"name": "mxbai-embed-large", "params": "335M", "context": 512, "capabilities": ["embed"]},
+      {"name": "snowflake-arctic-embed", "params": "335M", "context": 8192, "capabilities": ["embed"]}
+    ]
+  }
+}

@@ -1,0 +1,21 @@
+[Unit]
+Description=Ollama Load Balancer
+After=network.target
+
+[Service]
+Type=simple
+User=matthieu
+WorkingDirectory=/home/matthieu/ollama_loadbalancer
+Environment="PATH=/home/matthieu/ollama_loadbalancer/venv/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="OLLAMA_LB_CONFIG=/home/matthieu/ollama_loadbalancer/config.yaml"
+ExecStart=/home/matthieu/ollama_loadbalancer/venv/bin/python main.py
+Restart=always
+RestartSec=10
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ollama-lb
+
+[Install]
+WantedBy=multi-user.target
