@@ -11,12 +11,15 @@ An intelligent GPU-aware proxy/orchestrator for Ollama that dynamically manages 
 | English | Français |
 |---------|----------|
 | **100% Ollama API Compatible** - Drop-in replacement on port 11434 | **100% Compatible API Ollama** - Remplacement direct sur le port 11434 |
+| **Auto GPU Detection** - Automatically detects all available NVIDIA GPUs | **Détection Auto GPU** - Détecte automatiquement tous les GPUs NVIDIA |
 | **Dynamic GPU Allocation** - Auto-allocates 1, 2, or 3 GPUs per model | **Allocation GPU Dynamique** - Alloue automatiquement 1, 2 ou 3 GPUs par modèle |
 | **Instance Lifecycle** - Spawns on-demand, cleans up after inactivity | **Cycle de Vie des Instances** - Création à la demande, nettoyage après inactivité |
 | **Request Queuing** - Queues when resources unavailable | **File d'Attente** - Met en queue quand les ressources sont indisponibles |
 | **Model Reuse** - Reuses instances for same model requests | **Réutilisation** - Réutilise les instances pour le même modèle |
 | **Health Monitoring** - Periodic health checks | **Surveillance** - Vérifications de santé périodiques |
 | **Streaming Support** - Full support for streaming responses | **Support Streaming** - Support complet des réponses en streaming |
+| **System Monitoring** - CPU, RAM usage in status API | **Monitoring Système** - Usage CPU, RAM dans l'API status |
+| **Context Tracking** - Track context size per request | **Suivi Contexte** - Suivi de la taille de contexte par requête |
 
 ---
 
@@ -39,6 +42,7 @@ Client (Standard Ollama API)
         ▼
 ┌─────────────────────────────────┐
 │  GPU Pool Manager               │
+│  - Auto-detect GPUs (nvidia-smi)│
 │  - GPU state (free/allocated)   │
 │  - Active Ollama instances      │
 │  - Dynamic ports (11500+)       │
@@ -46,7 +50,7 @@ Client (Standard Ollama API)
         │
    ┌────┴────┬─────────┐
    ▼         ▼         ▼
- GPU 0     GPU 1     GPU 2
+ GPU 0     GPU 1     GPU N
 ```
 
 ---
@@ -56,6 +60,7 @@ Client (Standard Ollama API)
 - Python 3.10+
 - Ollama installed and in PATH / Ollama installé et dans le PATH
 - NVIDIA GPUs with CUDA / GPUs NVIDIA avec CUDA
+- nvidia-smi (for auto GPU detection) / nvidia-smi (pour la détection auto des GPUs)
 
 ---
 
@@ -72,7 +77,7 @@ source venv/bin/activate
 # Install dependencies / Installer les dépendances
 pip install -r requirements.txt
 
-# Edit configuration / Modifier la configuration
+# Edit configuration (optional) / Modifier la configuration (optionnel)
 nano config.yaml
 ```
 
@@ -84,25 +89,28 @@ server:
   port: 11434
   log_level: "INFO"
 
-gpu_pool:
-  - id: 0
-  - id: 1
-  - id: 2
+# GPU Pool Configuration (optional - auto-detected if not specified)
+# Configuration GPU Pool (optionnel - auto-détecté si non spécifié)
+# gpu_pool:
+#   - id: 0
+#   - id: 1
+#   - id: 2
 
 models:
-  - pattern: "*:70b"
+  "llama3:70b":
     gpu_count: 3
-  - pattern: "*:32b"
-    gpu_count: 2
-  - pattern: "*:27b"
-    gpu_count: 2
-  - pattern: "*"
+    priority: high
+  "llama3:8b":
     gpu_count: 1
+    priority: normal
+  default:
+    gpu_count: 1
+    priority: normal
 
 behavior:
   when_busy: "queue"
   queue_timeout: 300
-  instance_ttl: 300
+  instance_ttl: 120
 ```
 
 ---
@@ -141,6 +149,11 @@ curl http://localhost:11434/api/generate -d '{
 curl http://localhost:11434/api/embeddings -d '{
   "model": "nomic-embed-text",
   "prompt": "Hello world"
+}'
+
+# Pull a model / Télécharger un modèle
+curl http://localhost:11434/api/pull -d '{
+  "name": "llama3:8b"
 }'
 
 # List models / Lister les modèles
@@ -188,13 +201,64 @@ curl http://localhost:11434/api/status/queue
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/status` | GET | Full system status |
+| `/api/status` | GET | Full system status (CPU, RAM, GPU, instances, queue) |
 | `/api/status/gpu` | GET | GPU pool status |
-| `/api/status/instances` | GET | Ollama instances |
+| `/api/status/instances` | GET | Ollama instances with context info |
 | `/api/status/queue` | GET | Request queue |
 | `/api/queue/{id}` | DELETE | Cancel queued request |
+| `/api/admin/clear-queue` | POST | Clear all queued requests |
 | `/health` | GET | Health check |
 | `/ready` | GET | Readiness check |
+
+### Status Response Example / Exemple de Réponse Status
+
+```json
+{
+  "status": "running",
+  "uptime_seconds": 3600,
+  "system": {
+    "cpu": {
+      "usage_percent": 45.2,
+      "cores_logical": 32,
+      "cores_physical": 16
+    },
+    "memory": {
+      "total_gb": 128.5,
+      "used_gb": 64.3,
+      "usage_percent": 50.1
+    }
+  },
+  "gpu_pool": {
+    "total": 6,
+    "free": 4,
+    "allocated": 2
+  },
+  "instances": {
+    "instances": [
+      {
+        "id": "abc123",
+        "model_name": "llama3:8b",
+        "gpu_ids": [0],
+        "state": "ready",
+        "context_length": 8192,
+        "model_size": "4.7GB",
+        "current_request_context": 2048,
+        "last_request_context": 1500,
+        "active_requests": 1,
+        "request_count": 42
+      }
+    ]
+  },
+  "queue": {
+    "size": 0,
+    "max_size": 20
+  },
+  "config": {
+    "total_gpus": 6,
+    "when_busy": "queue"
+  }
+}
+```
 
 ---
 
@@ -209,19 +273,36 @@ curl http://localhost:11434/api/status/queue
 | `log_level` | DEBUG/INFO/WARNING/ERROR | `INFO` |
 | `log_format` | json/text | `json` |
 
+### GPU Pool / Pool GPU
+
+GPUs are **automatically detected** using `nvidia-smi` if `gpu_pool` is not specified.
+
+*Les GPUs sont **automatiquement détectés** via `nvidia-smi` si `gpu_pool` n'est pas spécifié.*
+
+```yaml
+# Optional: Manual GPU configuration
+# Optionnel: Configuration manuelle des GPUs
+gpu_pool:
+  - id: 0
+  - id: 1
+  - id: 2
+```
+
 ### Models / Modèles
 
 ```yaml
 models:
-  - pattern: "llama3.3:70b"   # Exact match / Correspondance exacte
+  "llama3.3:70b":       # Exact match / Correspondance exacte
     gpu_count: 3
-    priority: 10
+    priority: high
 
-  - pattern: "*:70b"          # Wildcard / Joker
-    gpu_count: 3
-
-  - pattern: "*"              # Default / Par défaut
+  "llama3:8b":
     gpu_count: 1
+    priority: normal
+
+  default:              # Fallback for unlisted models
+    gpu_count: 1
+    priority: normal
 ```
 
 ### Behavior / Comportement
@@ -230,15 +311,25 @@ models:
 |--------|----------------|----------------|---------|
 | `when_busy` | `queue` or `reject` | `queue` ou `reject` | `queue` |
 | `queue_timeout` | Max queue wait (s) | Attente max en queue (s) | `300` |
-| `instance_ttl` | Idle shutdown time (s) | Temps avant arrêt (s) | `300` |
-| `max_queue_size` | Max queued requests | Requêtes max en queue | `100` |
-| `startup_timeout` | Max startup time (s) | Temps de démarrage max (s) | `120` |
+| `instance_ttl` | Idle shutdown time (s) | Temps avant arrêt (s) | `120` |
+| `max_queue_size` | Max queued requests | Requêtes max en queue | `20` |
+| `health_check_interval` | Health check interval (s) | Intervalle health check (s) | `10` |
+| `startup_timeout` | Max startup time (s) | Temps de démarrage max (s) | `180` |
 
 ---
 
 ## Systemd Service
 
-Create / Créer `/etc/systemd/system/ollama-lb.service`:
+Copy the provided service file / Copier le fichier service fourni:
+
+```bash
+sudo cp ollama-lb.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable ollama-lb
+sudo systemctl start ollama-lb
+```
+
+Or create your own `/etc/systemd/system/ollama-lb.service`:
 
 ```ini
 [Unit]
@@ -249,19 +340,48 @@ After=network.target
 Type=simple
 User=your-user
 WorkingDirectory=/path/to/ollama_loadbalancer
-ExecStart=/path/to/venv/bin/python main.py
+Environment="PATH=/path/to/ollama_loadbalancer/venv/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="OLLAMA_MODELS=/home/your-user/.ollama/models"
+ExecStart=/path/to/ollama_loadbalancer/venv/bin/python main.py
 Restart=always
 RestartSec=10
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ollama-lb
 
 [Install]
 WantedBy=multi-user.target
 ```
 
+### Service Commands / Commandes Service
+
 ```bash
-sudo systemctl daemon-reload
-sudo systemctl enable ollama-lb
+# Start / Démarrer
 sudo systemctl start ollama-lb
+
+# Stop / Arrêter
+sudo systemctl stop ollama-lb
+
+# Restart / Redémarrer
+sudo systemctl restart ollama-lb
+
+# Status / État
+sudo systemctl status ollama-lb
+
+# Logs / Journaux
+sudo journalctl -u ollama-lb -f
 ```
+
+---
+
+## Environment Variables / Variables d'Environnement
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `OLLAMA_LB_CONFIG` | Path to config file | `config.yaml` |
+| `OLLAMA_MODELS` | Path to models directory | `~/.ollama/models` |
 
 ---
 
@@ -293,10 +413,29 @@ python calibrate.py --output config.yaml
 
 ```bash
 # Check logs / Vérifier les logs
-journalctl -u ollama-lb -f
+sudo journalctl -u ollama-lb -f
 
 # Verify GPUs / Vérifier les GPUs
 nvidia-smi
+
+# Check GPU detection / Vérifier la détection GPU
+nvidia-smi --query-gpu=index --format=csv,noheader
+```
+
+### Permission denied for models / Permission refusée pour les modèles
+
+Set the `OLLAMA_MODELS` environment variable to a writable directory:
+
+*Définir la variable `OLLAMA_MODELS` vers un répertoire accessible en écriture:*
+
+```bash
+export OLLAMA_MODELS=/home/your-user/.ollama/models
+```
+
+Or in systemd service:
+
+```ini
+Environment="OLLAMA_MODELS=/home/your-user/.ollama/models"
 ```
 
 ### Requests timing out / Requêtes en timeout
@@ -320,13 +459,14 @@ The load balancer handles Content-Length header modifications automatically. If 
 ```
 ollama_loadbalancer/
 ├── main.py              # FastAPI application entry point
-├── config.py            # Configuration loading and validation
+├── config.py            # Configuration loading and auto GPU detection
 ├── gpu_pool.py          # GPU allocation management
-├── ollama_manager.py    # Ollama instance lifecycle
-├── proxy.py             # Request proxying logic
+├── ollama_manager.py    # Ollama instance lifecycle and model info
+├── proxy.py             # Request proxying and context tracking
 ├── request_queue.py     # Request queuing system
 ├── calibrate.py         # VRAM calibration script
 ├── config.yaml          # Configuration file
+├── ollama-lb.service    # Systemd service file
 └── requirements.txt     # Python dependencies
 ```
 

@@ -7,9 +7,36 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, model_validator
 
 logger = logging.getLogger(__name__)
+
+
+def _detect_gpus() -> list[int]:
+    """Detect available NVIDIA GPUs using nvidia-smi.
+
+    Returns:
+        List of GPU IDs.
+    """
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=index", "--format=csv,noheader"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=5,
+        )
+        gpu_ids = [int(line.strip()) for line in result.stdout.strip().split("\n") if line.strip()]
+        return gpu_ids
+    except subprocess.CalledProcessError as e:
+        logger.warning(f"nvidia-smi command failed: {e}")
+        return []
+    except FileNotFoundError:
+        logger.warning("nvidia-smi not found - NVIDIA drivers may not be installed")
+        return []
+    except Exception as e:
+        logger.warning(f"Failed to detect GPUs: {e}")
+        return []
 
 
 class GPUConfig(BaseModel):
@@ -48,57 +75,28 @@ class Config(BaseModel):
     models: dict[str, ModelConfig] = Field(default_factory=dict)
     behavior: BehaviorConfig = Field(default_factory=BehaviorConfig)
 
-    @field_validator("gpu_pool", mode="before")
+    @model_validator(mode="before")
     @classmethod
-    def validate_gpu_pool(cls, v):
-        """Convert list of dicts to list of GPUConfig."""
-        if not v:
-            # Auto-detect GPUs using nvidia-smi
-            detected_gpus = cls._detect_gpus()
-            if detected_gpus:
-                logger.info(f"Auto-detected {len(detected_gpus)} GPU(s): {detected_gpus}")
-                return [{"id": gpu_id} for gpu_id in detected_gpus]
-            else:
-                logger.warning("No GPUs detected, using default configuration with 1 GPU")
-                return [{"id": 0}]
-        return v
+    def validate_config(cls, data):
+        """Validate and auto-detect GPUs if needed."""
+        if isinstance(data, dict):
+            # Auto-detect GPUs if not specified
+            if "gpu_pool" not in data or not data["gpu_pool"]:
+                detected_gpus = _detect_gpus()
+                if detected_gpus:
+                    logger.info(f"Auto-detected {len(detected_gpus)} GPU(s): {detected_gpus}")
+                    data["gpu_pool"] = [{"id": gpu_id} for gpu_id in detected_gpus]
+                else:
+                    logger.warning("No GPUs detected, using default configuration with 1 GPU")
+                    data["gpu_pool"] = [{"id": 0}]
 
-    @staticmethod
-    def _detect_gpus() -> list[int]:
-        """Detect available NVIDIA GPUs using nvidia-smi.
+            # Ensure default model config exists
+            if "models" not in data or data["models"] is None:
+                data["models"] = {}
+            if "default" not in data["models"]:
+                data["models"]["default"] = {"gpu_count": 1, "priority": "normal"}
 
-        Returns:
-            List of GPU IDs.
-        """
-        try:
-            result = subprocess.run(
-                ["nvidia-smi", "--query-gpu=index", "--format=csv,noheader"],
-                capture_output=True,
-                text=True,
-                check=True,
-                timeout=5,
-            )
-            gpu_ids = [int(line.strip()) for line in result.stdout.strip().split("\n") if line.strip()]
-            return gpu_ids
-        except subprocess.CalledProcessError as e:
-            logger.warning(f"nvidia-smi command failed: {e}")
-            return []
-        except FileNotFoundError:
-            logger.warning("nvidia-smi not found - NVIDIA drivers may not be installed")
-            return []
-        except Exception as e:
-            logger.warning(f"Failed to detect GPUs: {e}")
-            return []
-
-    @field_validator("models", mode="before")
-    @classmethod
-    def validate_models(cls, v):
-        """Ensure default model config exists."""
-        if v is None:
-            v = {}
-        if "default" not in v:
-            v["default"] = {"gpu_count": 1, "priority": "normal"}
-        return v
+        return data
 
     def get_model_config(self, model_name: str) -> ModelConfig:
         """Get configuration for a specific model, falling back to default."""
