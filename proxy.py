@@ -107,6 +107,32 @@ class OllamaProxy:
         except (json.JSONDecodeError, KeyError):
             return None
 
+    def _extract_context_size(self, body: bytes) -> Optional[int]:
+        """Extract context size from request body.
+
+        Args:
+            body: Request body bytes.
+
+        Returns:
+            Context size or None.
+        """
+        try:
+            data = json.loads(body)
+            # Check for explicit num_ctx in options
+            if "options" in data and "num_ctx" in data["options"]:
+                return data["options"]["num_ctx"]
+            # Estimate from prompt/messages length
+            total_length = 0
+            if "prompt" in data:
+                total_length = len(data["prompt"])
+            elif "messages" in data:
+                for msg in data["messages"]:
+                    if "content" in msg:
+                        total_length += len(msg["content"])
+            return total_length if total_length > 0 else None
+        except (json.JSONDecodeError, KeyError, TypeError):
+            return None
+
     def _inject_gpu_options(self, body: bytes, gpu_count: int) -> bytes:
         """Inject GPU options to force full GPU usage (no CPU offload).
 
@@ -399,7 +425,9 @@ class OllamaProxy:
         Returns:
             Proxied response.
         """
-        self._ollama_manager.mark_request_start(instance.id)
+        # Extract context size from request
+        context_size = self._extract_context_size(body)
+        self._ollama_manager.mark_request_start(instance.id, context_size)
 
         try:
             is_streaming = self._is_streaming_request(body)

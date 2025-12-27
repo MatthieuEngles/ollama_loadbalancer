@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any
 
+import psutil
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
@@ -279,9 +280,31 @@ async def status():
     """Get detailed load balancer status."""
     uptime = (datetime.now() - start_time).total_seconds() if start_time else 0
 
+    # Get system resource usage
+    cpu_percent = psutil.cpu_percent(interval=0.1)  # Average across all cores
+    cpu_count = psutil.cpu_count(logical=True)
+    cpu_count_physical = psutil.cpu_count(logical=False)
+
+    memory = psutil.virtual_memory()
+    memory_total_gb = memory.total / (1024 ** 3)
+    memory_used_gb = memory.used / (1024 ** 3)
+    memory_percent = memory.percent
+
     return JSONResponse(content={
         "status": "running",
         "uptime_seconds": uptime,
+        "system": {
+            "cpu": {
+                "usage_percent": round(cpu_percent, 2),
+                "cores_logical": cpu_count,
+                "cores_physical": cpu_count_physical,
+            },
+            "memory": {
+                "total_gb": round(memory_total_gb, 2),
+                "used_gb": round(memory_used_gb, 2),
+                "usage_percent": round(memory_percent, 2),
+            },
+        },
         "gpu_pool": gpu_pool.get_status(),
         "instances": ollama_manager.get_status(),
         "queue": request_queue.get_status(),

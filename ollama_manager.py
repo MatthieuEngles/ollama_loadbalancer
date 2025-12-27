@@ -41,6 +41,11 @@ class OllamaInstance:
     last_request_at: Optional[datetime] = None
     request_count: int = 0
     active_requests: int = 0
+    context_length: Optional[int] = None
+    model_size: Optional[str] = None
+    model_parameters: Optional[dict] = None
+    current_request_context: Optional[int] = None  # Context size of current request
+    last_request_context: Optional[int] = None  # Context size of last completed request
 
     @property
     def host(self) -> str:
@@ -64,6 +69,11 @@ class OllamaInstance:
             "last_request_at": self.last_request_at.isoformat() if self.last_request_at else None,
             "request_count": self.request_count,
             "active_requests": self.active_requests,
+            "context_length": self.context_length,
+            "model_size": self.model_size,
+            "model_parameters": self.model_parameters,
+            "current_request_context": self.current_request_context,
+            "last_request_context": self.last_request_context,
         }
 
 
@@ -258,7 +268,12 @@ class OllamaManager:
         env["CUDA_VISIBLE_DEVICES"] = instance.cuda_devices
         env["OLLAMA_HOST"] = f"0.0.0.0:{instance.port}"
         env["OLLAMA_KEEP_ALIVE"] = "-1"  # Keep model loaded
-        env["OLLAMA_MODELS"] = "/usr/share/ollama/.ollama/models"  # Use system models
+
+        # Use OLLAMA_MODELS from environment if set, otherwise default to user's home
+        if "OLLAMA_MODELS" not in env:
+            home_dir = os.path.expanduser("~")
+            env["OLLAMA_MODELS"] = os.path.join(home_dir, ".ollama", "models")
+
         env["OLLAMA_GPU_OVERHEAD"] = "0"  # No GPU memory overhead
         env["OLLAMA_MAX_LOADED_MODELS"] = "1"  # One model per instance
         env["OLLAMA_FLASH_ATTENTION"] = "1"  # Enable flash attention
@@ -331,6 +346,8 @@ class OllamaManager:
                         instance.state = InstanceState.READY
                         self._schedule_ttl(instance.id)
                         logger.info(f"Instance {instance.id} ready on port {instance.port}")
+                        # Fetch model info in the background
+                        asyncio.create_task(self._fetch_model_info(instance))
                     return True
             except Exception as e:
                 logger.debug(f"Health check {instance.id} failed: {e}")
@@ -340,6 +357,53 @@ class OllamaManager:
 
         logger.error(f"Instance {instance.id} failed to become ready within {timeout}s")
         return False
+
+    async def _fetch_model_info(self, instance: OllamaInstance):
+        """Fetch model information from Ollama instance.
+
+        Args:
+            instance: Instance to fetch info for.
+        """
+        if not instance.model_name or instance.model_name.startswith("__"):
+            return  # Skip for management instances
+
+        try:
+            response = await self._http_client.post(
+                f"{instance.host}/api/show",
+                json={"name": instance.model_name},
+                timeout=10.0,
+            )
+            if response.status_code == 200:
+                data = response.json()
+                # Extract context length from model info
+                if "model_info" in data:
+                    model_info = data["model_info"]
+                    # Try to parse context length from various fields
+                    for key in model_info:
+                        if "context" in key.lower():
+                            try:
+                                instance.context_length = int(model_info[key])
+                            except (ValueError, TypeError):
+                                pass
+
+                # Extract parameters
+                if "parameters" in data:
+                    instance.model_parameters = data["parameters"]
+
+                # Extract model size
+                if "size" in data:
+                    # Convert bytes to human readable
+                    size_bytes = data["size"]
+                    for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+                        if size_bytes < 1024.0:
+                            instance.model_size = f"{size_bytes:.1f}{unit}"
+                            break
+                        size_bytes /= 1024.0
+
+                logger.debug(f"Fetched model info for {instance.id}: "
+                           f"context={instance.context_length}, size={instance.model_size}")
+        except Exception as e:
+            logger.debug(f"Failed to fetch model info for {instance.id}: {e}")
 
     async def _cleanup_failed_instance(self, instance: OllamaInstance):
         """Cleanup a failed instance."""
@@ -428,13 +492,20 @@ class OllamaManager:
         """Reset TTL timer for an instance."""
         self._schedule_ttl(instance_id)
 
-    def mark_request_start(self, instance_id: str):
-        """Mark the start of a request to an instance."""
+    def mark_request_start(self, instance_id: str, context_size: Optional[int] = None):
+        """Mark the start of a request to an instance.
+
+        Args:
+            instance_id: ID of the instance.
+            context_size: Context size requested for this request.
+        """
         instance = self._instances.get(instance_id)
         if instance:
             instance.active_requests += 1
             instance.last_request_at = datetime.now()
             instance.request_count += 1
+            if context_size is not None:
+                instance.current_request_context = context_size
 
             # Cancel TTL while requests are active
             if instance_id in self._ttl_tasks:
@@ -446,6 +517,10 @@ class OllamaManager:
         instance = self._instances.get(instance_id)
         if instance:
             instance.active_requests = max(0, instance.active_requests - 1)
+            # Save the context size of the completed request
+            if instance.current_request_context is not None:
+                instance.last_request_context = instance.current_request_context
+                instance.current_request_context = None
             if instance.active_requests == 0:
                 self._schedule_ttl(instance_id)
 

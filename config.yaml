@@ -9,10 +9,14 @@ server:
 
 # GPU Pool Configuration
 # List all GPUs available for Ollama instances
-gpu_pool:
-  - id: 0
-  - id: 1
-  - id: 2
+# If not specified, GPUs will be auto-detected using nvidia-smi
+# gpu_pool:
+#   - id: 0
+#   - id: 1
+#   - id: 2
+#   - id: 3
+#   - id: 4
+#   - id: 5
 
 # Model Configuration
 # Define GPU requirements for specific models
@@ -94,7 +98,7 @@ behavior:
   # Action when resources are insufficient: "queue" or "reject"
   # - queue: Wait in queue until resources become available
   # - reject: Return HTTP 429 immediately
-  when_busy: "queue"
+  when_busy: "reject"
 
   # Maximum time (seconds) a request can wait in queue
   queue_timeout: 300

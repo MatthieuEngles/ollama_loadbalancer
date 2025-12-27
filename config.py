@@ -1,11 +1,15 @@
 """Configuration loading and validation for Ollama Load Balancer."""
 
+import logging
 import os
+import subprocess
 from pathlib import Path
 from typing import Literal
 
 import yaml
 from pydantic import BaseModel, Field, field_validator
+
+logger = logging.getLogger(__name__)
 
 
 class GPUConfig(BaseModel):
@@ -49,9 +53,42 @@ class Config(BaseModel):
     def validate_gpu_pool(cls, v):
         """Convert list of dicts to list of GPUConfig."""
         if not v:
-            # Auto-detect GPUs if not specified
-            return [{"id": i} for i in range(3)]  # Default to 3 GPUs
+            # Auto-detect GPUs using nvidia-smi
+            detected_gpus = cls._detect_gpus()
+            if detected_gpus:
+                logger.info(f"Auto-detected {len(detected_gpus)} GPU(s): {detected_gpus}")
+                return [{"id": gpu_id} for gpu_id in detected_gpus]
+            else:
+                logger.warning("No GPUs detected, using default configuration with 1 GPU")
+                return [{"id": 0}]
         return v
+
+    @staticmethod
+    def _detect_gpus() -> list[int]:
+        """Detect available NVIDIA GPUs using nvidia-smi.
+
+        Returns:
+            List of GPU IDs.
+        """
+        try:
+            result = subprocess.run(
+                ["nvidia-smi", "--query-gpu=index", "--format=csv,noheader"],
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=5,
+            )
+            gpu_ids = [int(line.strip()) for line in result.stdout.strip().split("\n") if line.strip()]
+            return gpu_ids
+        except subprocess.CalledProcessError as e:
+            logger.warning(f"nvidia-smi command failed: {e}")
+            return []
+        except FileNotFoundError:
+            logger.warning("nvidia-smi not found - NVIDIA drivers may not be installed")
+            return []
+        except Exception as e:
+            logger.warning(f"Failed to detect GPUs: {e}")
+            return []
 
     @field_validator("models", mode="before")
     @classmethod
