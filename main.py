@@ -125,9 +125,9 @@ async def lifespan(app: FastAPI):
     gpu_pool = GPUPool(config.gpu_ids)
     logger.info(f"GPU Pool initialized with GPUs: {config.gpu_ids}")
 
-    ollama_manager = OllamaManager(gpu_pool, config.behavior)
+    ollama_manager = OllamaManager(gpu_pool, config.behavior, config.ollama)
     await ollama_manager.start()
-    logger.info("Ollama Manager started")
+    logger.info(f"Ollama Manager started (models_path={config.ollama.models_path})")
 
     request_queue = RequestQueue(
         max_size=config.behavior.max_queue_size,
@@ -269,6 +269,34 @@ async def version():
 async def root():
     """Root endpoint - Ollama compatible."""
     return JSONResponse(content={"status": "Ollama Load Balancer is running"})
+
+
+# ============================================================================
+# OpenAI-Compatible API Endpoints
+# ============================================================================
+
+@app.post("/v1/chat/completions")
+async def openai_chat_completions(request: Request):
+    """Chat completion - OpenAI compatible."""
+    return await proxy.handle_openai_request(request, "/v1/chat/completions")
+
+
+@app.post("/v1/completions")
+async def openai_completions(request: Request):
+    """Text completion - OpenAI compatible."""
+    return await proxy.handle_openai_request(request, "/v1/completions")
+
+
+@app.post("/v1/embeddings")
+async def openai_embeddings(request: Request):
+    """Generate embeddings - OpenAI compatible."""
+    return await proxy.handle_openai_request(request, "/v1/embeddings")
+
+
+@app.get("/v1/models")
+async def openai_list_models(request: Request):
+    """List models - OpenAI compatible."""
+    return await proxy.handle_management_request(request, "/v1/models")
 
 
 # ============================================================================

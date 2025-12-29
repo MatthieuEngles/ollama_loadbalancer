@@ -28,6 +28,13 @@ class OllamaProxy:
         "/api/embed",
     }
 
+    # OpenAI-compatible endpoints
+    OPENAI_ENDPOINTS = {
+        "/v1/chat/completions",
+        "/v1/completions",
+        "/v1/embeddings",
+    }
+
     # Endpoints that can go to any instance or need special handling
     MANAGEMENT_ENDPOINTS = {
         "/api/tags",
@@ -39,6 +46,7 @@ class OllamaProxy:
         "/api/create",
         "/api/blobs",
         "/api/version",
+        "/v1/models",
         "/",
     }
 
@@ -323,10 +331,171 @@ class OllamaProxy:
                 content={"version": "ollama-loadbalancer-0.1.0"}
             )
 
+        if path == "/v1/models":
+            return await self._handle_openai_models_request()
+
         # Unknown endpoint
         return JSONResponse(
             status_code=404,
             content={"error": f"Unknown endpoint: {path}"},
+        )
+
+    async def handle_openai_request(
+        self,
+        request: Request,
+        path: str,
+    ) -> StreamingResponse | JSONResponse:
+        """Handle OpenAI-compatible API requests.
+
+        Args:
+            request: FastAPI request.
+            path: Request path (e.g., /v1/chat/completions).
+
+        Returns:
+            Response from Ollama instance (OpenAI format).
+        """
+        self._stats["requests_total"] += 1
+
+        # Read request body
+        body = await request.body()
+        model_name = self._extract_model_from_body(body)
+
+        if not model_name:
+            self._stats["requests_failed"] += 1
+            return JSONResponse(
+                status_code=400,
+                content={"error": {"message": "model field is required", "type": "invalid_request_error"}},
+            )
+
+        # Get model configuration
+        model_config = self._config.get_model_config(model_name)
+        gpu_count = model_config.gpu_count
+
+        logger.info(f"OpenAI request for model {model_name} requiring {gpu_count} GPU(s)")
+
+        # Try to get or create instance
+        instance = await self._ollama_manager.get_or_create_instance(
+            model_name=model_name,
+            gpu_count=gpu_count,
+        )
+
+        # If no instance available, handle based on config
+        if not instance:
+            if self._config.behavior.when_busy == "reject":
+                self._stats["requests_failed"] += 1
+                return JSONResponse(
+                    status_code=429,
+                    content={"error": {"message": "Insufficient GPU resources available", "type": "rate_limit_error"}},
+                    headers={"Retry-After": "60"},
+                )
+
+            # Queue the request
+            queue_item = await self._request_queue.enqueue(
+                model_name=model_name,
+                gpu_count=gpu_count,
+                priority=model_config.priority,
+            )
+
+            if not queue_item:
+                self._stats["requests_failed"] += 1
+                return JSONResponse(
+                    status_code=429,
+                    content={"error": {"message": "Queue is full, please try again later", "type": "rate_limit_error"}},
+                    headers={"Retry-After": "60"},
+                )
+
+            self._stats["requests_queued"] += 1
+            logger.info(f"OpenAI request queued as {queue_item.id}")
+
+            # Wait for resources
+            success = await self._request_queue.wait_for_turn(queue_item)
+
+            if not success:
+                self._stats["requests_failed"] += 1
+                return JSONResponse(
+                    status_code=408,
+                    content={"error": {"message": queue_item.error or "Request timed out in queue", "type": "timeout_error"}},
+                )
+
+            # Try again after queue
+            instance = await self._ollama_manager.get_or_create_instance(
+                model_name=model_name,
+                gpu_count=gpu_count,
+            )
+
+            if not instance:
+                self._stats["requests_failed"] += 1
+                return JSONResponse(
+                    status_code=503,
+                    content={"error": {"message": "Failed to allocate resources after queue", "type": "server_error"}},
+                )
+
+        # Proxy the request to the instance (Ollama handles OpenAI format natively)
+        return await self._proxy_to_instance(
+            instance=instance,
+            request=request,
+            path=path,
+            body=body,
+        )
+
+    async def _handle_openai_models_request(self) -> JSONResponse:
+        """Handle /v1/models - list available models in OpenAI format."""
+        all_models = []
+
+        instances = self._ollama_manager.get_all_instances()
+
+        # Query each instance for its models (only READY instances)
+        for instance in instances:
+            if instance.state.value != "ready":
+                continue
+            try:
+                response = await self._http_client.get(
+                    f"{instance.host}/api/tags",
+                    timeout=10.0,
+                )
+                if response.status_code == 200:
+                    data = response.json()
+                    for model in data.get("models", []):
+                        model_name = model.get("name")
+                        if model_name:
+                            # Convert to OpenAI format
+                            all_models.append({
+                                "id": model_name,
+                                "object": "model",
+                                "created": 0,
+                                "owned_by": "ollama",
+                            })
+            except Exception as e:
+                logger.warning(f"Failed to get models from {instance.id}: {e}")
+
+        # If no response, use management instance
+        if not all_models:
+            instance = await self._ollama_manager.get_or_create_management_instance()
+            if instance:
+                try:
+                    response = await self._http_client.get(
+                        f"{instance.host}/api/tags",
+                        timeout=10.0,
+                    )
+                    if response.status_code == 200:
+                        data = response.json()
+                        for model in data.get("models", []):
+                            model_name = model.get("name")
+                            if model_name:
+                                all_models.append({
+                                    "id": model_name,
+                                    "object": "model",
+                                    "created": 0,
+                                    "owned_by": "ollama",
+                                })
+                except Exception as e:
+                    logger.warning(f"Failed to get models: {e}")
+
+        return JSONResponse(
+            content={
+                "object": "list",
+                "data": all_models,
+            }
         )
 
     async def _handle_tags_request(self) -> JSONResponse:

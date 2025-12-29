@@ -12,7 +12,7 @@ from typing import Optional
 
 import httpx
 
-from config import BehaviorConfig
+from config import BehaviorConfig, OllamaConfig
 from gpu_pool import GPUPool
 
 logger = logging.getLogger(__name__)
@@ -83,15 +83,17 @@ class OllamaManager:
     BASE_PORT = 11500
     MAX_INSTANCES = 10
 
-    def __init__(self, gpu_pool: GPUPool, behavior: BehaviorConfig):
+    def __init__(self, gpu_pool: GPUPool, behavior: BehaviorConfig, ollama_config: OllamaConfig | None = None):
         """Initialize the Ollama manager.
 
         Args:
             gpu_pool: GPU pool to use for allocation.
             behavior: Behavior configuration.
+            ollama_config: Ollama-specific configuration.
         """
         self._gpu_pool = gpu_pool
         self._behavior = behavior
+        self._ollama_config = ollama_config or OllamaConfig()
         self._instances: dict[str, OllamaInstance] = {}
         self._port_to_instance: dict[int, str] = {}
         self._next_port = self.BASE_PORT
@@ -327,10 +329,9 @@ class OllamaManager:
         # No CUDA_VISIBLE_DEVICES - let Ollama use CPU for management ops
         env["OLLAMA_HOST"] = f"0.0.0.0:{instance.port}"
 
-        # Use OLLAMA_MODELS from environment if set, otherwise default to user's home
-        if "OLLAMA_MODELS" not in env:
-            home_dir = os.path.expanduser("~")
-            env["OLLAMA_MODELS"] = os.path.join(home_dir, ".ollama", "models")
+        # Use models_path from config
+        if self._ollama_config.models_path:
+            env["OLLAMA_MODELS"] = self._ollama_config.models_path
 
         try:
             logger.info(f"Spawning management Ollama on port {instance.port} (no GPU)")
@@ -377,10 +378,9 @@ class OllamaManager:
         env["OLLAMA_HOST"] = f"0.0.0.0:{instance.port}"
         env["OLLAMA_KEEP_ALIVE"] = "-1"  # Keep model loaded
 
-        # Use OLLAMA_MODELS from environment if set, otherwise default to user's home
-        if "OLLAMA_MODELS" not in env:
-            home_dir = os.path.expanduser("~")
-            env["OLLAMA_MODELS"] = os.path.join(home_dir, ".ollama", "models")
+        # Use models_path from config
+        if self._ollama_config.models_path:
+            env["OLLAMA_MODELS"] = self._ollama_config.models_path
 
         env["OLLAMA_GPU_OVERHEAD"] = "0"  # No GPU memory overhead
         env["OLLAMA_MAX_LOADED_MODELS"] = "1"  # One model per instance
@@ -391,7 +391,8 @@ class OllamaManager:
         try:
             logger.info(
                 f"Spawning Ollama on port {instance.port} "
-                f"with CUDA_VISIBLE_DEVICES={instance.cuda_devices}"
+                f"with CUDA_VISIBLE_DEVICES={instance.cuda_devices}, "
+                f"OLLAMA_MODELS={env.get('OLLAMA_MODELS', 'default')}"
             )
 
             process = await asyncio.create_subprocess_exec(

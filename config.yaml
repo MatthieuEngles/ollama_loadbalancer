@@ -4,8 +4,16 @@
 server:
   host: "0.0.0.0"
   port: 11434
-  log_level: "DEBUG"      # DEBUG, INFO, WARNING, ERROR
-  log_format: "json"     # json or text
+  log_level: "INFO"       # DEBUG, INFO, WARNING, ERROR
+  log_format: "json"      # json or text
+
+# Ollama Configuration
+ollama:
+  # Path to Ollama models directory
+  # If not specified, auto-detected from common locations:
+  # - /usr/share/ollama/.ollama/models (system-wide)
+  # - ~/.ollama/models (user)
+  models_path: "/usr/share/ollama/.ollama/models"
 
 # GPU Pool Configuration
 # List all GPUs available for Ollama instances

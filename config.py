@@ -60,6 +60,35 @@ class BehaviorConfig(BaseModel):
     startup_timeout: int = Field(default=120, ge=10)
 
 
+class OllamaConfig(BaseModel):
+    """Ollama-specific configuration."""
+    models_path: str | None = None  # Path to Ollama models directory
+
+    @model_validator(mode="after")
+    def resolve_models_path(self):
+        """Resolve models path, checking common locations."""
+        if self.models_path:
+            return self
+
+        # Check common locations
+        common_paths = [
+            "/usr/share/ollama/.ollama/models",
+            os.path.expanduser("~/.ollama/models"),
+            "/var/lib/ollama/models",
+        ]
+
+        for path in common_paths:
+            if os.path.exists(path) and os.path.isdir(path):
+                self.models_path = path
+                logger.info(f"Auto-detected Ollama models path: {path}")
+                return self
+
+        # Fallback to user's home
+        self.models_path = os.path.expanduser("~/.ollama/models")
+        logger.warning(f"Using default models path: {self.models_path}")
+        return self
+
+
 class ServerConfig(BaseModel):
     """Server configuration."""
     host: str = "0.0.0.0"
@@ -71,6 +100,7 @@ class ServerConfig(BaseModel):
 class Config(BaseModel):
     """Main configuration for Ollama Load Balancer."""
     server: ServerConfig = Field(default_factory=ServerConfig)
+    ollama: OllamaConfig = Field(default_factory=OllamaConfig)
     gpu_pool: list[GPUConfig] = Field(default_factory=list)
     models: dict[str, ModelConfig] = Field(default_factory=dict)
     behavior: BehaviorConfig = Field(default_factory=BehaviorConfig)
