@@ -292,25 +292,17 @@ class OllamaProxy:
         self._stats["requests_total"] += 1
 
         # For pull/delete/create, we need a running instance
-        # Use the first available or spawn a minimal one
+        # Use the first available or spawn a lightweight management instance (no GPU needed)
         if path in {"/api/pull", "/api/delete", "/api/copy", "/api/create", "/api/show"}:
             body = await request.body()
 
-            # Try to use existing instance first
-            instances = self._ollama_manager.get_all_instances()
-            if instances:
-                instance = instances[0]
-            else:
-                # Spawn minimal instance on first GPU
-                instance = await self._ollama_manager.get_or_create_instance(
-                    model_name="__management__",
-                    gpu_count=1,
+            # Get or create a management instance (doesn't require GPU)
+            instance = await self._ollama_manager.get_or_create_management_instance()
+            if not instance:
+                return JSONResponse(
+                    status_code=503,
+                    content={"error": "Failed to create management instance"},
                 )
-                if not instance:
-                    return JSONResponse(
-                        status_code=503,
-                        content={"error": "No GPU available for management operation"},
-                    )
 
             return await self._proxy_to_instance(
                 instance=instance,
@@ -363,12 +355,9 @@ class OllamaProxy:
             except Exception as e:
                 logger.warning(f"Failed to get tags from {instance.id}: {e}")
 
-        # If no models found, spawn a temporary instance to list models
+        # If no response, use management instance (no GPU needed)
         if not got_response:
-            instance = await self._ollama_manager.get_or_create_instance(
-                model_name="__tags__",
-                gpu_count=1,
-            )
+            instance = await self._ollama_manager.get_or_create_management_instance()
             if instance:
                 try:
                     response = await self._http_client.get(

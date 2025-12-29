@@ -255,6 +255,114 @@ class OllamaManager:
 
         return new_instance
 
+    async def get_or_create_management_instance(self) -> Optional[OllamaInstance]:
+        """Get or create a lightweight instance for management operations (pull, delete, etc.).
+
+        This instance doesn't require GPU allocation and is used for operations
+        that don't need model inference.
+
+        Returns:
+            OllamaInstance if successful, None otherwise.
+        """
+        # First, try to use any existing ready instance
+        for instance in self._instances.values():
+            if instance.state == InstanceState.READY:
+                logger.info(f"Reusing existing instance {instance.id} for management operation")
+                return instance
+
+        # Check if management instance already exists
+        mgmt_instance = self._instances.get("__mgmt__")
+        if mgmt_instance:
+            if mgmt_instance.state == InstanceState.READY:
+                return mgmt_instance
+            elif mgmt_instance.state == InstanceState.STARTING:
+                # Wait for it to be ready
+                ready = await self._wait_for_ready(mgmt_instance)
+                if ready:
+                    return mgmt_instance
+                return None
+
+        # Create a new management instance (no GPU allocation needed)
+        async with self._lock:
+            # Double-check after acquiring lock
+            if "__mgmt__" in self._instances:
+                return self._instances["__mgmt__"]
+
+            port = self._get_next_port()
+            instance = OllamaInstance(
+                id="__mgmt__",
+                port=port,
+                gpu_ids=[],  # No GPU needed for management
+                model_name="__management__",
+            )
+            self._instances["__mgmt__"] = instance
+            self._port_to_instance[port] = "__mgmt__"
+
+        logger.info(f"Creating management instance on port {port}")
+
+        # Spawn without GPU
+        success = await self._spawn_management_ollama(instance)
+        if not success:
+            await self._cleanup_failed_instance(instance)
+            return None
+
+        # Wait for ready
+        ready = await self._wait_for_ready(instance)
+        if not ready:
+            await self._cleanup_failed_instance(instance)
+            return None
+
+        return instance
+
+    async def _spawn_management_ollama(self, instance: OllamaInstance) -> bool:
+        """Spawn an Ollama process for management operations (no GPU needed).
+
+        Args:
+            instance: Instance to spawn process for.
+
+        Returns:
+            True if spawn succeeded.
+        """
+        env = os.environ.copy()
+        # No CUDA_VISIBLE_DEVICES - let Ollama use CPU for management ops
+        env["OLLAMA_HOST"] = f"0.0.0.0:{instance.port}"
+
+        # Use OLLAMA_MODELS from environment if set, otherwise default to user's home
+        if "OLLAMA_MODELS" not in env:
+            home_dir = os.path.expanduser("~")
+            env["OLLAMA_MODELS"] = os.path.join(home_dir, ".ollama", "models")
+
+        try:
+            logger.info(f"Spawning management Ollama on port {instance.port} (no GPU)")
+
+            process = await asyncio.create_subprocess_exec(
+                "ollama",
+                "serve",
+                env=env,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,
+            )
+            instance.process = process
+
+            # Give it a moment to start
+            await asyncio.sleep(1)
+
+            # Check if process died immediately
+            if process.returncode is not None:
+                stdout, stderr = await process.communicate()
+                logger.error(
+                    f"Management Ollama process exited immediately with code {process.returncode}. "
+                    f"stderr: {stderr.decode()}"
+                )
+                return False
+
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to spawn management Ollama: {e}")
+            return False
+
     async def _spawn_ollama(self, instance: OllamaInstance) -> bool:
         """Spawn an Ollama process.
 
