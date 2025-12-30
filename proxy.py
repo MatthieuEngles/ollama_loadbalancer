@@ -184,20 +184,24 @@ class OllamaProxy:
         self,
         request: Request,
         path: str,
+        _retry_gpu_count: int | None = None,
+        _cached_body: bytes | None = None,
     ) -> StreamingResponse | JSONResponse:
         """Handle a request that requires a specific model.
 
         Args:
             request: FastAPI request.
             path: Request path.
+            _retry_gpu_count: Internal param for retry with more GPUs after memory error.
+            _cached_body: Cached body for retry (can't read request body twice).
 
         Returns:
             Response from Ollama instance.
         """
         self._stats["requests_total"] += 1
 
-        # Read request body
-        body = await request.body()
+        # Read request body (use cached on retry)
+        body = _cached_body if _cached_body is not None else await request.body()
         model_name = self._extract_model_from_body(body)
 
         if not model_name:
@@ -209,19 +213,21 @@ class OllamaProxy:
 
         # Get model configuration
         model_config = self._config.get_model_config(model_name)
-        gpu_count = model_config.gpu_count
+        base_gpu_count = model_config.gpu_count
+        current_gpu_count = _retry_gpu_count or base_gpu_count
 
         # Inject GPU options to prevent CPU offload
-        body = self._inject_gpu_options(body, gpu_count)
+        body = self._inject_gpu_options(body, current_gpu_count)
 
         logger.info(
-            f"Request for model {model_name} requiring {gpu_count} GPU(s)"
+            f"Request for model {model_name} requiring {current_gpu_count} GPU(s)"
+            + (f" (retry from {base_gpu_count})" if _retry_gpu_count else "")
         )
 
         # Try to get or create instance
         instance = await self._ollama_manager.get_or_create_instance(
             model_name=model_name,
-            gpu_count=gpu_count,
+            gpu_count=current_gpu_count,
         )
 
         # If no instance available, handle based on config
@@ -237,7 +243,7 @@ class OllamaProxy:
             # Queue the request
             queue_item = await self._request_queue.enqueue(
                 model_name=model_name,
-                gpu_count=gpu_count,
+                gpu_count=current_gpu_count,
                 priority=model_config.priority,
             )
 
@@ -265,7 +271,7 @@ class OllamaProxy:
             # Try again after queue
             instance = await self._ollama_manager.get_or_create_instance(
                 model_name=model_name,
-                gpu_count=gpu_count,
+                gpu_count=current_gpu_count,
             )
 
             if not instance:
@@ -276,12 +282,44 @@ class OllamaProxy:
                 )
 
         # Proxy the request to the instance
-        return await self._proxy_to_instance(
+        response, memory_error = await self._proxy_to_instance(
             instance=instance,
             request=request,
             path=path,
             body=body,
         )
+
+        # Handle memory error with auto-scaling
+        if memory_error:
+            next_gpu_count = current_gpu_count + 1
+            max_gpus = self._gpu_pool.total_gpus
+
+            if next_gpu_count <= max_gpus:
+                logger.warning(
+                    f"Memory error with {model_name} on {current_gpu_count} GPU(s). "
+                    f"Destroying instance and retrying with {next_gpu_count} GPU(s)"
+                )
+
+                # Destroy the failed instance to free GPUs
+                await self._ollama_manager.destroy_instance(instance.id)
+
+                # Retry with more GPUs - get_or_create_instance will handle
+                # eviction of inactive instances if needed
+                return await self.handle_model_request(
+                    request=request,
+                    path=path,
+                    _retry_gpu_count=next_gpu_count,
+                    _cached_body=body,
+                )
+            else:
+                logger.error(
+                    f"Memory error with {model_name} on {current_gpu_count} GPU(s). "
+                    f"Cannot scale: already at max GPUs ({max_gpus})"
+                )
+                # Return the original error response
+                return response
+
+        return response
 
     async def handle_management_request(
         self,
@@ -312,12 +350,13 @@ class OllamaProxy:
                     content={"error": "Failed to create management instance"},
                 )
 
-            return await self._proxy_to_instance(
+            response, _ = await self._proxy_to_instance(
                 instance=instance,
                 request=request,
                 path=path,
                 body=body,
             )
+            return response
 
         # For /api/tags and /api/ps, aggregate from all instances or use any
         if path == "/api/tags":
@@ -344,20 +383,24 @@ class OllamaProxy:
         self,
         request: Request,
         path: str,
+        _retry_gpu_count: int | None = None,
+        _cached_body: bytes | None = None,
     ) -> StreamingResponse | JSONResponse:
         """Handle OpenAI-compatible API requests.
 
         Args:
             request: FastAPI request.
             path: Request path (e.g., /v1/chat/completions).
+            _retry_gpu_count: Internal param for retry with more GPUs after memory error.
+            _cached_body: Cached body for retry.
 
         Returns:
             Response from Ollama instance (OpenAI format).
         """
         self._stats["requests_total"] += 1
 
-        # Read request body
-        body = await request.body()
+        # Read request body (use cached on retry)
+        body = _cached_body if _cached_body is not None else await request.body()
         model_name = self._extract_model_from_body(body)
 
         if not model_name:
@@ -369,14 +412,18 @@ class OllamaProxy:
 
         # Get model configuration
         model_config = self._config.get_model_config(model_name)
-        gpu_count = model_config.gpu_count
+        base_gpu_count = model_config.gpu_count
+        current_gpu_count = _retry_gpu_count or base_gpu_count
 
-        logger.info(f"OpenAI request for model {model_name} requiring {gpu_count} GPU(s)")
+        logger.info(
+            f"OpenAI request for model {model_name} requiring {current_gpu_count} GPU(s)"
+            + (f" (retry from {base_gpu_count})" if _retry_gpu_count else "")
+        )
 
         # Try to get or create instance
         instance = await self._ollama_manager.get_or_create_instance(
             model_name=model_name,
-            gpu_count=gpu_count,
+            gpu_count=current_gpu_count,
         )
 
         # If no instance available, handle based on config
@@ -392,7 +439,7 @@ class OllamaProxy:
             # Queue the request
             queue_item = await self._request_queue.enqueue(
                 model_name=model_name,
-                gpu_count=gpu_count,
+                gpu_count=current_gpu_count,
                 priority=model_config.priority,
             )
 
@@ -420,7 +467,7 @@ class OllamaProxy:
             # Try again after queue
             instance = await self._ollama_manager.get_or_create_instance(
                 model_name=model_name,
-                gpu_count=gpu_count,
+                gpu_count=current_gpu_count,
             )
 
             if not instance:
@@ -431,12 +478,42 @@ class OllamaProxy:
                 )
 
         # Proxy the request to the instance (Ollama handles OpenAI format natively)
-        return await self._proxy_to_instance(
+        response, memory_error = await self._proxy_to_instance(
             instance=instance,
             request=request,
             path=path,
             body=body,
         )
+
+        # Handle memory error with auto-scaling
+        if memory_error:
+            next_gpu_count = current_gpu_count + 1
+            max_gpus = self._gpu_pool.total_gpus
+
+            if next_gpu_count <= max_gpus:
+                logger.warning(
+                    f"Memory error with {model_name} on {current_gpu_count} GPU(s). "
+                    f"Destroying instance and retrying with {next_gpu_count} GPU(s)"
+                )
+
+                await self._ollama_manager.destroy_instance(instance.id)
+
+                # Retry with more GPUs - get_or_create_instance will handle
+                # eviction of inactive instances if needed
+                return await self.handle_openai_request(
+                    request=request,
+                    path=path,
+                    _retry_gpu_count=next_gpu_count,
+                    _cached_body=body,
+                )
+            else:
+                logger.error(
+                    f"Memory error with {model_name} on {current_gpu_count} GPU(s). "
+                    f"Cannot scale: already at max GPUs ({max_gpus})"
+                )
+                return response
+
+        return response
 
     async def _handle_openai_models_request(self) -> JSONResponse:
         """Handle /v1/models - list available models in OpenAI format."""
@@ -571,7 +648,7 @@ class OllamaProxy:
         request: Request,
         path: str,
         body: bytes,
-    ) -> StreamingResponse | JSONResponse:
+    ) -> tuple[StreamingResponse | JSONResponse, bool]:
         """Proxy a request to an Ollama instance.
 
         Args:
@@ -581,7 +658,7 @@ class OllamaProxy:
             body: Request body.
 
         Returns:
-            Proxied response.
+            Tuple of (proxied response, memory_error flag).
         """
         # Extract context size from request
         context_size = self._extract_context_size(body)
@@ -604,7 +681,9 @@ class OllamaProxy:
             }
 
             if is_streaming and path in self.MODEL_ENDPOINTS:
-                return await self._proxy_streaming(
+                # For streaming, we check the first chunk for memory errors
+                # before committing to the stream. This avoids preflight overhead.
+                return await self._proxy_streaming_with_error_check(
                     instance=instance,
                     url=url,
                     method=request.method,
@@ -626,9 +705,109 @@ class OllamaProxy:
             return JSONResponse(
                 status_code=502,
                 content={"error": f"Proxy error: {str(e)}"},
-            )
+            ), False
         finally:
             self._ollama_manager.mark_request_end(instance.id)
+
+    async def _proxy_streaming_with_error_check(
+        self,
+        instance: OllamaInstance,
+        url: str,
+        method: str,
+        headers: dict,
+        body: bytes,
+    ) -> tuple[StreamingResponse | JSONResponse, bool]:
+        """Proxy a streaming request, checking first chunk for memory errors.
+
+        This method reads the first chunk to check for errors before committing
+        to a streaming response. If memory error detected, returns error response
+        with memory_error=True so auto-scaling can kick in.
+
+        Args:
+            instance: Target instance.
+            url: Target URL.
+            method: HTTP method.
+            headers: Request headers.
+            body: Request body.
+
+        Returns:
+            Tuple of (response, memory_error flag).
+        """
+        try:
+            req = self._http_client.build_request(
+                method=method,
+                url=url,
+                headers=headers,
+                content=body,
+            )
+
+            # Send request and get response without reading body
+            response = await self._http_client.send(req, stream=True)
+
+            # Get the async iterator once and keep reference to it
+            stream_iter = response.aiter_raw()
+
+            # Read first chunk to check for errors
+            first_chunk = b""
+            try:
+                first_chunk = await stream_iter.__anext__()
+            except StopAsyncIteration:
+                pass  # Empty response
+
+            # Check if first chunk is a memory error
+            if first_chunk:
+                try:
+                    first_data = json.loads(first_chunk.decode())
+                    if self._is_memory_error(first_data):
+                        logger.warning(f"Memory error in first chunk from instance {instance.id}")
+                        await response.aclose()
+                        return JSONResponse(
+                            status_code=500,
+                            content=first_data,
+                        ), True
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    pass  # Not a JSON error, continue streaming
+
+            # Create generator that yields first chunk then continues streaming
+            async def stream_generator():
+                try:
+                    # Yield buffered first chunk
+                    if first_chunk:
+                        self._stats["bytes_received"] += len(first_chunk)
+                        yield first_chunk
+
+                    # Continue streaming remaining chunks from same iterator
+                    async for chunk in stream_iter:
+                        self._stats["bytes_received"] += len(chunk)
+                        yield chunk
+
+                    self._stats["requests_success"] += 1
+                except Exception as e:
+                    logger.error(f"Streaming error: {e}")
+                    self._stats["requests_failed"] += 1
+                    yield json.dumps({"error": str(e)}).encode()
+                finally:
+                    await response.aclose()
+
+            return StreamingResponse(
+                stream_generator(),
+                media_type="application/x-ndjson",
+                headers={"Transfer-Encoding": "chunked"},
+            ), False
+
+        except Exception as e:
+            error_str = str(e)
+            if self._is_memory_error(error_str):
+                return JSONResponse(
+                    status_code=500,
+                    content={"error": error_str},
+                ), True
+            logger.error(f"Streaming setup error: {e}")
+            self._stats["requests_failed"] += 1
+            return JSONResponse(
+                status_code=502,
+                content={"error": str(e)},
+            ), False
 
     async def _proxy_streaming(
         self,
@@ -689,6 +868,27 @@ class OllamaProxy:
             headers={"Transfer-Encoding": "chunked"},
         )
 
+    def _is_memory_error(self, response_data: dict | str) -> bool:
+        """Check if response indicates a GPU memory error.
+
+        Args:
+            response_data: Response data (dict or string).
+
+        Returns:
+            True if this is a GPU memory error.
+        """
+        error_msg = ""
+        if isinstance(response_data, dict):
+            error_msg = response_data.get("error", "")
+        elif isinstance(response_data, str):
+            error_msg = response_data
+
+        return (
+            "memory layout cannot be allocated" in error_msg
+            or "out of memory" in error_msg.lower()
+            or "CUDA out of memory" in error_msg
+        )
+
     async def _proxy_non_streaming(
         self,
         instance: OllamaInstance,
@@ -696,7 +896,7 @@ class OllamaProxy:
         method: str,
         headers: dict,
         body: bytes,
-    ) -> JSONResponse:
+    ) -> tuple[JSONResponse, bool]:
         """Proxy a non-streaming request.
 
         Args:
@@ -707,7 +907,7 @@ class OllamaProxy:
             body: Request body.
 
         Returns:
-            JSON response.
+            Tuple of (JSON response, memory_error flag).
         """
         try:
             response = await self._http_client.request(
@@ -718,26 +918,37 @@ class OllamaProxy:
             )
 
             self._stats["bytes_received"] += len(response.content)
-            self._stats["requests_success"] += 1
 
             # Try to parse as JSON
             try:
+                response_data = response.json()
+
+                # Check for memory error
+                if response.status_code >= 400 and self._is_memory_error(response_data):
+                    logger.warning(f"Memory error detected from instance {instance.id}")
+                    return JSONResponse(
+                        status_code=response.status_code,
+                        content=response_data,
+                    ), True
+
+                self._stats["requests_success"] += 1
                 return JSONResponse(
                     status_code=response.status_code,
-                    content=response.json(),
-                )
+                    content=response_data,
+                ), False
             except json.JSONDecodeError:
+                self._stats["requests_success"] += 1
                 return JSONResponse(
                     status_code=response.status_code,
                     content={"raw": response.text},
-                )
+                ), False
 
         except Exception as e:
             self._stats["requests_failed"] += 1
             return JSONResponse(
                 status_code=502,
                 content={"error": str(e)},
-            )
+            ), False
 
     def get_stats(self) -> dict:
         """Get proxy statistics."""
