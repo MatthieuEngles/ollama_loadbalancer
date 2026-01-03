@@ -1,9 +1,6 @@
 # Claude Code
 .claude/
 
-# Documentation (generated)
-docs/
-
 # Python virtual environment
 venv/
 .venv/
