@@ -664,8 +664,8 @@ class OllamaProxy:
         context_size = self._extract_context_size(body)
         self._ollama_manager.mark_request_start(instance.id, context_size)
 
+        is_streaming = self._is_streaming_request(body) and path in self.MODEL_ENDPOINTS
         try:
-            is_streaming = self._is_streaming_request(body)
             url = f"{instance.host}{path}"
 
             # Build headers (filter out hop-by-hop headers and content-length)
@@ -680,9 +680,10 @@ class OllamaProxy:
                 }
             }
 
-            if is_streaming and path in self.MODEL_ENDPOINTS:
+            if is_streaming:
                 # For streaming, we check the first chunk for memory errors
                 # before committing to the stream. This avoids preflight overhead.
+                # Note: mark_request_end is called in stream_generator() for streaming
                 return await self._proxy_streaming_with_error_check(
                     instance=instance,
                     url=url,
@@ -707,7 +708,10 @@ class OllamaProxy:
                 content={"error": f"Proxy error: {str(e)}"},
             ), False
         finally:
-            self._ollama_manager.mark_request_end(instance.id)
+            # Only mark request end here for non-streaming requests
+            # Streaming requests mark end in stream_generator() after stream completes
+            if not is_streaming:
+                self._ollama_manager.mark_request_end(instance.id)
 
     async def _proxy_streaming_with_error_check(
         self,
@@ -788,6 +792,8 @@ class OllamaProxy:
                     yield json.dumps({"error": str(e)}).encode()
                 finally:
                     await response.aclose()
+                    # Mark request end here for streaming, not in _proxy_to_instance
+                    self._ollama_manager.mark_request_end(instance.id)
 
             return StreamingResponse(
                 stream_generator(),
