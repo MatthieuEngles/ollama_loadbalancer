@@ -217,11 +217,33 @@ class OllamaManager:
         current_gpu_count = _retry_gpu_count or gpu_count
 
         async with self._lock:
-            # Check if we can create a new instance (horizontal scaling)
-            can_allocate = await self._gpu_pool.can_allocate(current_gpu_count)
+            # FIRST: Check if we already have a ready instance for this model
+            existing = self._get_least_loaded_instance(model_name)
+            if existing:
+                logger.info(f"Reusing instance {existing.id} for {model_name} (active_requests={existing.active_requests})")
+                self._reset_ttl(existing.id)
+                return existing
+
+            # SECOND: Check for starting instance we can wait on
+            instance_ids = self._gpu_pool.get_instances_for_model(model_name)
+            for inst_id in instance_ids:
+                inst = self._instances.get(inst_id)
+                if inst and inst.state == InstanceState.STARTING:
+                    logger.info(f"Waiting for starting instance {inst.id} for {model_name}")
+                    starting_instance = inst
+                    break
+            else:
+                starting_instance = None
+
+            if starting_instance:
+                # Release lock and wait for starting instance to be ready
+                pass  # Will be handled after lock release below
+
+            # No existing instance - check if we can create a new one
+            can_allocate = not starting_instance and await self._gpu_pool.can_allocate(current_gpu_count)
 
             if can_allocate:
-                # Create new instance for parallel processing
+                # Create new instance
                 instance_id = str(uuid.uuid4())[:8]
                 allocation = await self._gpu_pool.try_allocate(
                     gpu_count=current_gpu_count,
@@ -246,49 +268,27 @@ class OllamaManager:
             else:
                 new_instance = None
 
-            # If we couldn't allocate, try to reuse least loaded instance
-            if new_instance is None:
-                existing = self._get_least_loaded_instance(model_name)
-                if existing:
-                    logger.info(f"Reusing instance {existing.id} for {model_name} (active_requests={existing.active_requests})")
-                    self._reset_ttl(existing.id)
-                    return existing
+            # If we couldn't allocate (and no starting instance), try eviction
+            if new_instance is None and not starting_instance:
+                # No GPUs and no existing instance for this model
+                # Try to evict inactive instances to free GPUs
+                evictable = self._get_evictable_instances(current_gpu_count)
+                total_freeable = sum(len(inst.gpu_ids) for inst in evictable)
 
-                # Check for starting instances we can wait on
-                instance_ids = self._gpu_pool.get_instances_for_model(model_name)
-                for inst_id in instance_ids:
-                    inst = self._instances.get(inst_id)
-                    if inst and inst.state == InstanceState.STARTING:
-                        logger.info(f"Waiting for starting instance {inst.id} for {model_name}")
-                        starting_instance = inst
-                        break
+                if total_freeable >= current_gpu_count:
+                    logger.info(
+                        f"Evicting {len(evictable)} inactive instance(s) to free "
+                        f"{total_freeable} GPU(s) for {model_name}"
+                    )
+                    instances_to_evict = evictable
                 else:
-                    starting_instance = None
-
-                if starting_instance:
-                    # Release lock and wait for starting instance
-                    instances_to_evict = None
-                else:
-                    # No GPUs and no existing instance for this model
-                    # Try to evict inactive instances to free GPUs
-                    evictable = self._get_evictable_instances(current_gpu_count)
-                    total_freeable = sum(len(inst.gpu_ids) for inst in evictable)
-
-                    if total_freeable >= current_gpu_count:
-                        logger.info(
-                            f"Evicting {len(evictable)} inactive instance(s) to free "
-                            f"{total_freeable} GPU(s) for {model_name}"
-                        )
-                        instances_to_evict = evictable
-                    else:
-                        # Not enough to evict
-                        logger.warning(
-                            f"No GPUs available for {model_name}: need {current_gpu_count}, "
-                            f"free={self._gpu_pool.free_count}, evictable={total_freeable}"
-                        )
-                        return None
+                    # Not enough to evict
+                    logger.warning(
+                        f"No GPUs available for {model_name}: need {current_gpu_count}, "
+                        f"free={self._gpu_pool.free_count}, evictable={total_freeable}"
+                    )
+                    return None
             else:
-                starting_instance = None
                 instances_to_evict = None
 
         # Evict instances outside the lock (to avoid deadlock on _stop_instance)
