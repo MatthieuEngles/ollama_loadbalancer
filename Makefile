@@ -14,19 +14,20 @@ PYTHON = python3
 help:
 	@echo "Ollama Load Balancer - Available commands:"
 	@echo ""
+	@echo "  make setup      - Full setup (disable ollama + install + pull models)"
 	@echo "  make install    - Install service (venv + deps + systemd)"
 	@echo "  make uninstall  - Remove systemd service"
+	@echo ""
 	@echo "  make start      - Start the service"
 	@echo "  make stop       - Stop the service"
 	@echo "  make restart    - Restart the service"
 	@echo "  make status     - Show service status"
 	@echo "  make logs       - Show service logs (follow mode)"
-	@echo "  make logs-full  - Show full service logs"
 	@echo ""
+	@echo "  make pull-models - Pull models from startup_models.txt"
 	@echo "  make venv       - Create virtual environment"
 	@echo "  make deps       - Install Python dependencies"
 	@echo "  make clean      - Remove virtual environment"
-	@echo "  make run        - Run locally (without systemd)"
 	@echo "  make test       - Test the API status endpoint"
 	@echo ""
 
@@ -144,3 +145,22 @@ clean:
 # Update (pull latest + reinstall)
 update: deps restart
 	@echo "Update complete."
+
+# Full setup (disable ollama service + install + pull models)
+setup:
+	@./scripts/setup.sh
+
+# Pull models from startup_models.txt
+pull-models:
+	@echo "Pulling models from startup_models.txt..."
+	@while IFS= read -r line || [ -n "$$line" ]; do \
+		line=$$(echo "$$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$$//'); \
+		[ -z "$$line" ] && continue; \
+		[ "$${line:0:1}" = "#" ] && continue; \
+		echo "Pulling: $$line"; \
+		curl -s -X POST http://localhost:11434/api/pull \
+			-H "Content-Type: application/json" \
+			-d "{\"name\": \"$$line\", \"stream\": false}" \
+			--max-time 600 | python3 -c "import sys,json; d=json.load(sys.stdin); print('  OK' if 'status' in d else 'Error: '+str(d))" 2>/dev/null || echo "  Failed"; \
+	done < startup_models.txt
+	@echo "Done."

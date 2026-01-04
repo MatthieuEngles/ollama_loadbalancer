@@ -1,0 +1,3 @@
+# Models to pull on startup (one per line)
+# Lines starting with # are ignored
+gemma3:4b

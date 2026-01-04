@@ -64,10 +64,43 @@ Client (Standard Ollama API)
 
 ---
 
-## Installation
+## Quick Setup (Fresh Machine) / Installation Rapide (Machine Vierge)
 
+**One-liner:**
+```bash
+git clone https://github.com/MatthieuEngles/ollama_loadbalancer.git && cd ollama_loadbalancer && make setup
+```
+
+**Or step by step / Ou étape par étape:**
 ```bash
 # Clone the project / Cloner le projet
+git clone https://github.com/MatthieuEngles/ollama_loadbalancer.git
+cd ollama_loadbalancer
+
+# (Optional) Edit models to pull on startup / (Optionnel) Modifier les modèles à télécharger
+nano startup_models.txt
+
+# Full setup / Installation complète
+make setup
+```
+
+This script will:
+- Install Ollama if not present
+- Stop and disable the default `ollama.service` if it exists
+- Install the load balancer as a systemd service
+- Pull all models listed in `startup_models.txt`
+
+*Ce script va:*
+- *Installer Ollama s'il n'est pas présent*
+- *Stopper et désactiver le service `ollama.service` par défaut s'il existe*
+- *Installer le load balancer comme service systemd*
+- *Télécharger tous les modèles listés dans `startup_models.txt`*
+
+---
+
+## Manual Installation / Installation Manuelle
+
+```bash
 cd ollama_loadbalancer
 
 # Create virtual environment / Créer l'environnement virtuel
@@ -76,6 +109,9 @@ source venv/bin/activate
 
 # Install dependencies / Installer les dépendances
 pip install -r requirements.txt
+
+# Install as service / Installer comme service
+make install
 
 # Edit configuration (optional) / Modifier la configuration (optionnel)
 nano config.yaml
@@ -466,8 +502,15 @@ ollama_loadbalancer/
 ├── request_queue.py     # Request queuing system
 ├── calibrate.py         # VRAM calibration script
 ├── config.yaml          # Configuration file
+├── startup_models.txt   # Models to pull on setup
 ├── ollama-lb.service    # Systemd service file
-└── requirements.txt     # Python dependencies
+├── requirements.txt     # Python dependencies
+├── Makefile             # Build and management commands
+├── scripts/
+│   └── setup.sh         # Full setup script for fresh machines
+└── docs/
+    ├── api_formats.md   # Ollama vs OpenAI API documentation
+    └── gpu_inference_guide.md
 ```
 
 ---
