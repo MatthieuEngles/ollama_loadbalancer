@@ -664,7 +664,7 @@ class OllamaProxy:
         context_size = self._extract_context_size(body)
         self._ollama_manager.mark_request_start(instance.id, context_size)
 
-        is_streaming = self._is_streaming_request(body) and path in self.MODEL_ENDPOINTS
+        is_streaming = self._is_streaming_request(body) and path in (self.MODEL_ENDPOINTS | self.OPENAI_ENDPOINTS)
         try:
             url = f"{instance.host}{path}"
 
@@ -690,6 +690,7 @@ class OllamaProxy:
                     method=request.method,
                     headers=headers,
                     body=body,
+                    path=path,
                 )
             else:
                 return await self._proxy_non_streaming(
@@ -720,6 +721,7 @@ class OllamaProxy:
         method: str,
         headers: dict,
         body: bytes,
+        path: str = "",
     ) -> tuple[StreamingResponse | JSONResponse, bool]:
         """Proxy a streaming request, checking first chunk for memory errors.
 
@@ -795,10 +797,13 @@ class OllamaProxy:
                     # Mark request end here for streaming, not in _proxy_to_instance
                     self._ollama_manager.mark_request_end(instance.id)
 
+            # Use text/event-stream for OpenAI endpoints, application/x-ndjson for Ollama
+            media_type = "text/event-stream" if path in self.OPENAI_ENDPOINTS else "application/x-ndjson"
+
             return StreamingResponse(
                 stream_generator(),
-                media_type="application/x-ndjson",
-                headers={"Transfer-Encoding": "chunked"},
+                media_type=media_type,
+                headers={"Transfer-Encoding": "chunked", "Cache-Control": "no-cache"},
             ), False
 
         except Exception as e:
